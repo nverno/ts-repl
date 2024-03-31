@@ -6,11 +6,11 @@ Tested using [ts-node](https://github.com/TypeStrong/ts-node) to run a
 Typescript interpreter.
 
 + Features:
-  + Enable input font-locking with `ts-repl-font-lock-enable`
+  + Completion-at-point: enable with `ts-repl-enable-completion`
+  + Enable input font-locking with `ts-repl-enable-font-lock`
   + Output font-locking handled by `xterm-color`
   + Save/load history from `ts-repl-history-filename`
   + Jump to errors from repl
-  + TODO: Completion-at-point
 
 When `add-node-modules-path` is installed, local `ts-repl-command` executables
 will be found from node_modules.
