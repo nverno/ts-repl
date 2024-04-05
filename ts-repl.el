@@ -33,7 +33,7 @@
 ;;
 ;;; Code:
 
-(require 'cc-mode)                      ; syntax
+(require 'nodejs-common)
 (require 'comint)
 
 (defgroup ts-repl nil
@@ -50,7 +50,7 @@
   "Command line arguments for `ts-repl-command'."
   :type '(repeat string))
 
-(defcustom ts-repl-buffer-name "Typescript"
+(defcustom ts-repl-process-name "Typescript"
   "Default buffer name for the Typescript interpreter."
   :type 'string
   :safe 'stringp)
@@ -88,36 +88,15 @@
 
 (defvar ts-repl-compilation-regexp-alist
   ;; FIXME: where should errors like "<repl>.ts:0:1" go?
-  '(("^\\s-*\\([^\n:]+\\):\\([0-9]+\\):\\([0-9]+\\)" 1 2 3))
+  '(("^\\s-*\\([^<\n:]+\\):\\([0-9]+\\):\\([0-9]+\\)" 1 2 3))
   "Regexp to match errors in Typescript repl.")
 
-(defvar add-node-modules-path-command)
-
-(defun ts-repl--locate-executable (command)
-  "Locate executable for COMMAND.
-When `add-node-modules-path' is available, local executables will be found
-first."
-  (when (require 'add-node-modules-path nil t)
-    ;; npm v >= 9 no longer has 'npm bin' command
-    (when (version< (string-trim-right (shell-command-to-string "npm -v")) "9")
-      (setq add-node-modules-path-command '("npm bin")))
-    (add-node-modules-path))
-  (or (executable-find command)
-      (user-error "Executable \"%s\" not found" command)))
-
-(defun ts-repl--calculate-command (&optional prompt program)
-  (let* ((program (let ((cmd (or program ts-repl-command)))
-                    (if (functionp cmd)
-                        (funcall cmd)
-                      (ts-repl--locate-executable cmd))))
-         (command (concat program " " (mapconcat 'identity ts-repl-arguments " "))))
-    (if prompt (read-shell-command "Run Typescript: " command) command)))
 
 (defun ts-repl-buffer ()
   "Return inferior Typescript buffer for current buffer."
   (if (derived-mode-p 'ts-repl-mode)
       (current-buffer)
-    (let* ((proc-name ts-repl-buffer-name)
+    (let* ((proc-name ts-repl-process-name)
            (buffer-name (format "*%s*" proc-name)))
       (when (comint-check-proc buffer-name)
         buffer-name))))
@@ -134,74 +113,20 @@ If CMD is non-nil, use it to start repl.
 STARTFILE overrides `ts-repl-startfile' when present.
 When called interactively, or with SHOW, show the repl buffer after starting."
   (interactive (list current-prefix-arg nil nil t))
-  (let* ((cmd (ts-repl--calculate-command prompt cmd))
-         (buffer (ts-repl-make-comint
+  (let* ((cmd (nodejs-common--calculate-command
+               "Run typescript: " ts-repl-command ts-repl-arguments prompt cmd))
+         (buffer (nodejs-common--make-comint
                   cmd
-                  ts-repl-buffer-name
-                  (or startfile ts-repl-startfile)
-                  show)))
-    (get-buffer-process buffer)))
-
-(defun ts-repl--write-history (process _)
-  "Write history file for inferior Typescript PROCESS."
-  (when ts-repl-history-filename
-    (let ((buffer (process-buffer process)))
-      (when (and buffer (buffer-live-p buffer))
-        (with-current-buffer buffer (comint-write-input-ring))))))
-
-(defun ts-repl-make-comint (cmd proc-name &optional startfile show)
-  "Create a Typescript comint buffer.
-CMD is the Typescript command to be executed and PROC-NAME is the process name
-that will be given to the comint buffer.
-If STARTFILE is non-nil, use that instead of `ts-repl-startfile'
-which is used by default. See `make-comint' for details of STARTFILE.
-If SHOW is non-nil, display the Typescript comint buffer after it is created.
-Returns the name of the created comint buffer."
-  (let ((proc-buff-name (format "*%s*" proc-name)))
-    (unless (comint-check-proc proc-buff-name)
-      (let* ((cmdlist (split-string-and-unquote cmd))
-             (program (car cmdlist))
-             (args (cdr cmdlist))
-             (buffer (apply #'make-comint-in-buffer proc-name
-                            proc-buff-name
-                            "env"
-                            startfile
-                            `("TERM=xterm"
-                              ,@(and ts-repl-debug '("TS_NODE_DEBUG=1"))
-                              ,program ,@args))))
-        (set-process-sentinel
-         (get-buffer-process buffer) #'ts-repl--write-history)
-        (with-current-buffer buffer
-          (ts-repl-mode))))
+                  ts-repl-process-name
+                  (and ts-repl-debug '("TS_NODE_DEBUG=1"))
+                  ts-repl-history-filename
+                  (or startfile ts-repl-startfile))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'ts-repl-mode)
+        (ts-repl-mode)))
     (when show
-      (pop-to-buffer proc-buff-name))
-    proc-buff-name))
-
-(defvar-local ts-repl--prompt-internal nil)
-
-(defun ts-repl-calculate-prompt-regexps ()
-  (setq ts-repl--prompt-internal
-        (rx-to-string `(: (or ,ts-repl-prompt-continue
-                              ,ts-repl-prompt)))))
-
-(defun ts-repl--preoutput-filter (string)
-  ;; Ignore repeated prompts when switching windows
-  (if (and (not (bolp))
-           (string-match-p (rx-to-string
-                            `(seq bos (or (+ ,ts-repl-prompt)
-                                          (+ ,ts-repl-prompt-continue))
-                                  eos))
-                           string))
-      ""
-    ;; Filter out the extra prompt characters that
-    ;; accumulate in the output when sending regions
-    ;; to the inferior process.
-    (replace-regexp-in-string
-     (rx-to-string `(: bol
-                       (* (regexp ,ts-repl--prompt-internal))
-                       (group (regexp ,ts-repl--prompt-internal) (* nonl))))
-     "\\1" string)))
-
+      (pop-to-buffer buffer))
+    (get-buffer-process buffer)))
 
 ;; -------------------------------------------------------------------
 ;;;  Completion
@@ -210,23 +135,26 @@ Returns the name of the created comint buffer."
   (setq string (replace-regexp-in-string
                 "\r+" "" (xterm-color-filter string)))
   (process-put proc 'done
-               (or (string-prefix-p ts-repl-prompt string)
+               (or (string-match-p (concat "^" ts-repl-prompt) string)
                    (string-match-p
                     (concat "^\\s-*" (process-get proc 'initial)) string)))
   (with-current-buffer (process-buffer proc)
     (insert string)
-    (goto-char (point-max))))
+    (goto-char (point-max))
+    (set-marker (process-mark proc) (point))))
 
 (defun ts-repl--send-redirected (proc string)
   (process-put proc 'done nil)
-  (process-put proc 'initial (string-trim string))
+  (process-put proc 'initial string)
   (process-send-string proc string)
   (while (and (null (process-get proc 'done))
               (accept-process-output proc 0.1))))
 
 ;; Same procedure as `nodejs-repl--send-string'
 (defun ts-repl--get-completions-from-process (input)
-  (with-temp-buffer
+  ;; FIXME: use temp buffer when everything works
+  (with-current-buffer (get-buffer-create "*typescript-completions*")
+    (erase-buffer)
     (let* ((proc (ts-repl-process))
            (orig-marker (marker-position (process-mark proc)))
            (orig-filter (process-filter proc))
@@ -248,21 +176,15 @@ Returns the name of the created comint buffer."
             (end (progn (goto-char (point-max))
                         (forward-line -1)
                         (point))))
-        (prog1 (split-string
-                (buffer-substring-no-properties beg end)
-                "[ \t\n]" t "[ \t\n]")
+        (prog1 (when (> end beg)
+                 (split-string
+                  (buffer-substring-no-properties beg end)
+                  "[ \t\n]" t "[ \t\n]"))
           ;; Clear repl line
           (process-send-string proc "\x15"))))))
 
-(defvar ts-repl-syntax-table
-  (let ((st (make-syntax-table)))
-    (c-populate-syntax-table st)
-    (modify-syntax-entry ?$ "_" st)
-    st)
-  "Syntax table in `ts-repl-mode'.")
-
 (defvar ts-repl--completion-syntax
-  (let ((tab (copy-syntax-table ts-repl-syntax-table)))
+  (let ((tab (copy-syntax-table nodejs-common-syntax-table)))
     (modify-syntax-entry ?. "w" tab)
     tab))
 
@@ -271,17 +193,21 @@ Returns the name of the created comint buffer."
 ;; - use filename completion in strings
 ;; - better bounds for completion candidate
 (defun ts-repl-completion-at-point ()
-  (when (comint-after-pmark-p)
+  (when (and (comint-after-pmark-p)
+             (not (let* ((syn (syntax-ppss nil)))
+                    (or (car (setq syn (nthcdr 3 syn)))
+                        (car (setq syn (cdr syn))) (nth 3 syn)))))
     (let ((end (point))
           (beg (save-excursion
                  (with-syntax-table ts-repl--completion-syntax
-                   (backward-sexp))
+                   (ignore-errors (backward-sexp)))
                  (point))))
-      (when (and (>= beg (comint-line-beginning-position))
+      (when (and beg (>= beg (comint-line-beginning-position))
                  (< beg end))
-        (list beg end
-              (completion-table-with-cache
-               #'ts-repl--get-completions-from-process))))))
+        (let ((completions (ts-repl--get-completions-from-process
+                            (buffer-substring-no-properties beg end))))
+          (when completions
+            (list beg end (completion-table-with-cache (lambda (_s) completions)))))))))
 
 ;;; Font-locking
 
@@ -298,38 +224,19 @@ Returns the name of the created comint buffer."
   "TAB" #'completion-at-point)
 
 ;;;###autoload
-(define-derived-mode ts-repl-mode comint-mode "Typescript"
+(define-derived-mode ts-repl-mode nodejs-common-mode "Typescript"
   "Major mode for Typescript repl.
 
 \\<ts-repl-mode-map>"
-  :syntax-table ts-repl-syntax-table
-  (setq-local mode-line-process '(":%s")
-              comment-start "//"
-              comment-end ""
-              comment-start-skip "//+ *"
-              parse-sexp-ignore-comments t
-              parse-sexp-lookup-properties t
-              paragraph-separate "\\'"
-              paragraph-start ts-repl-prompt)
+  :syntax-table nodejs-common-syntax-table
+  (nodejs-common--calculate-prompt-regexps ts-repl-prompt ts-repl-prompt-continue)
 
-  (ts-repl-calculate-prompt-regexps)
-  (setq-local comint-input-ignoredups t
-              comint-input-history-ignore "^\\."
-              comint-prompt-read-only t
-              comint-process-echoes t
-              comint-input-ring-file-name ts-repl-history-filename
-              comint-prompt-regexp ts-repl--prompt-internal
-              comint-scroll-to-bottom-on-input 'this
-              comint-scroll-to-bottom-on-output 'this
-              ;; comint-scroll-show-maximum-output nil
-              ;; comint-output-filter-functions '(ansi-color-process-output)
-              comint-preoutput-filter-functions
-              '(xterm-color-filter ts-repl--preoutput-filter))
+  (setq-local paragraph-start ts-repl-prompt
+              comint-input-ring-file-name ts-repl-history-filename)
 
   (when comint-input-ring-file-name
-    ;; XXX: write history on exit?
     (comint-read-input-ring t))
-  
+
   ;; Completion
   (when ts-repl-enable-completion
     (add-hook 'completion-at-point-functions #'ts-repl-completion-at-point nil t))
