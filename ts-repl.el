@@ -152,8 +152,8 @@ When called interactively, or with SHOW, show the repl buffer after starting."
 
 ;; Same procedure as `nodejs-repl--send-string'
 (defun ts-repl--get-completions-from-process (input)
-  ;; FIXME: use temp buffer when everything works
-  (with-current-buffer (get-buffer-create "*typescript-completions*")
+  "Get completions for input from inferior process."
+  (with-temp-buffer
     (erase-buffer)
     (let* ((proc (ts-repl-process))
            (orig-marker (marker-position (process-mark proc)))
