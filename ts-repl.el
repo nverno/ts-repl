@@ -46,7 +46,7 @@
   :type 'string
   :risky t)
 
-(defcustom ts-repl-arguments '("--cwdMode")
+(defcustom ts-repl-arguments '("--cwdMode" "--pretty")
   "Command line arguments for `ts-repl-command'."
   :type '(repeat string))
 
@@ -128,6 +128,7 @@ When called interactively, or with SHOW, show the repl buffer after starting."
       (pop-to-buffer buffer))
     (get-buffer-process buffer)))
 
+
 ;; -------------------------------------------------------------------
 ;;;  Completion
 
@@ -188,9 +189,8 @@ When called interactively, or with SHOW, show the repl buffer after starting."
     (modify-syntax-entry ?. "w" tab)
     tab))
 
-;;; FIXME:
+;;; TODO:
 ;; - not completing for repl commands, eg. '.b'
-;; - use filename completion in strings
 ;; - better bounds for completion candidate
 (defun ts-repl-completion-at-point ()
   (when (and (comint-after-pmark-p)
@@ -209,6 +209,39 @@ When called interactively, or with SHOW, show the repl buffer after starting."
           (when completions
             (list beg end (completion-table-with-cache (lambda (_s) completions)))))))))
 
+
+;;; Sending Repl input
+;; XXX(5/31/24): coould share this with nodejs-repl
+(defun ts-repl-send-region (start end)
+  "Send region from START to END to the `ts-repl-process'.
+The region is sent the repl with editor mode enabled."
+  (interactive "r")
+  (let ((proc (ts-repl-process)) pos)
+    (or proc (user-error "Typescript repl process not found."))
+    ;; Erase the echoed output from
+    ;; .editor ...
+    (with-current-buffer (process-buffer proc)
+      (setq pos (and comint-last-prompt
+                     (marker-position (cdr comint-last-prompt))))
+      (comint-snapshot-last-prompt))
+    (process-send-string
+     proc (concat
+           ;; Note: preceding "\n" here helps prompt fontification stay sharp
+           "\n.editor\n" (buffer-substring-no-properties start end) "\n"))
+    (with-current-buffer (process-buffer proc)
+      (while (accept-process-output proc 0.1))
+      (when pos
+        (let ((inhibit-read-only t)
+              (pmark (progn (goto-char (process-mark proc))
+                            (forward-line 0)
+                            (point-marker))))
+          (delete-region pos pmark)
+          (goto-char pos)
+          (comint-set-process-mark)
+          (comint-snapshot-last-prompt))))
+    (process-send-string proc "\x04")))
+
+
 ;;; Font-locking
 
 (defvar ts-repl--commands
@@ -217,7 +250,11 @@ When called interactively, or with SHOW, show the repl buffer after starting."
 
 (defvar ts-repl-font-lock-keywords
   `((,(rx-to-string `(: bol  "." (or ,@ts-repl--commands) eow))
-     . font-lock-keyword-face)))
+     . font-lock-keyword-face)
+    (,(rx bol (or "..." (seq (* white) ".editor")))
+     . font-lock-comment-face)
+    ("^\\(Invalid\\) REPL keyword" (1 'error)))
+  "Additional font-locking keywords in `ts-repl-mode'.")
 
 (defvar-keymap ts-repl-mode-map
   :doc "Keymap in inferior Typescript buffer."
@@ -229,7 +266,8 @@ When called interactively, or with SHOW, show the repl buffer after starting."
 
 \\<ts-repl-mode-map>"
   :syntax-table nodejs-common-syntax-table
-  (nodejs-common--calculate-prompt-regexps ts-repl-prompt ts-repl-prompt-continue)
+  (nodejs-common--calculate-prompt-regexps
+   ts-repl-prompt ts-repl-prompt-continue)
 
   (setq-local paragraph-start ts-repl-prompt
               comint-input-ring-file-name ts-repl-history-filename)
@@ -242,7 +280,7 @@ When called interactively, or with SHOW, show the repl buffer after starting."
     (add-hook 'completion-at-point-functions #'ts-repl-completion-at-point nil t))
 
   ;; Font-locking
-  (setq-local font-lock-defaults '(ts-repl-font-lock-keywords t))
+  (setq-local font-lock-defaults '(ts-repl-font-lock-keywords nil nil))
   (setq comint-highlight-input nil
         comint-indirect-setup-function
         (lambda ()
