@@ -122,7 +122,10 @@ Returns the name of the created comint buffer."
 ;;; Major mode
 
 (define-derived-mode nodejs-common-mode comint-mode "Node"
-  "Major mode for Node repls."
+  "Major mode for Node repls.
+
+This mode resets `comint-output-filter-functions' locally, so you
+may want to re-add functions to it using `nodejs-common-mode-hook'."
   :syntax-table nodejs-common-syntax-table
   (setq-local mode-line-process '(":%s")
               comment-start "//"
@@ -134,10 +137,14 @@ Returns the name of the created comint buffer."
 
   (setq-local comint-input-ignoredups t
               comint-input-history-ignore "^\\."
+              comint-highlight-input nil
               comint-prompt-read-only t
               comint-process-echoes t
+              
               comint-scroll-to-bottom-on-input 'this
               comint-scroll-to-bottom-on-output 'this
+              scroll-conservatively 1
+              comint-output-filter-functions '(comint-watch-for-password-prompt)
               comint-preoutput-filter-functions
               '(xterm-color-filter nodejs-common--preoutput-filter)))
 

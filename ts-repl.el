@@ -299,8 +299,9 @@ The region is sent the repl with editor mode enabled."
 
   ;; Errors
   (setq-local compilation-error-regexp-alist ts-repl-compilation-regexp-alist)
-  (compilation-shell-minor-mode t))
-
+  (compilation-shell-minor-mode t)
+  ;; XXX: remove this?
+  (face-remap-add-relative 'compilation-error 'link))
 
 (provide 'ts-repl)
 ;; Local Variables:
