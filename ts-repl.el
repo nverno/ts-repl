@@ -88,7 +88,7 @@
 
 (defvar ts-repl-compilation-regexp-alist
   ;; FIXME: where should errors like "<repl>.ts:0:1" go?
-  '(("^\\s-*\\([^<\n:]+\\):\\([0-9]+\\):\\([0-9]+\\)" 1 2 3))
+  `(("^\\s-*\\([^<\n:]+\\):\\([0-9]+\\):\\([0-9]+\\)" 1 2 3))
   "Regexp to match errors in Typescript repl.")
 
 
@@ -253,8 +253,13 @@ The region is sent the repl with editor mode enabled."
      . font-lock-keyword-face)
     (,(rx bol (or "..." (seq (* white) ".editor")))
      . font-lock-comment-face)
-    ("^\\(Invalid\\) REPL keyword" (1 'error)))
+    ("^\\(Invalid\\) REPL keyword" (1 'error))
+    ;; Documentation links in '.type <symbol>' output
+    ("^\\[MDN Reference\\](\\([^)]+\\))"
+     (0 (prog1 () (help-xref-button 0 'help-url (match-string 1))))
+     (0 'link t)))
   "Additional font-locking keywords in `ts-repl-mode'.")
+
 
 (defvar-keymap ts-repl-mode-map
   :doc "Keymap in inferior Typescript buffer."
