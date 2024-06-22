@@ -87,8 +87,9 @@
   "Non-nil to set TS_NODE_DEBUG.")
 
 (defvar ts-repl-compilation-regexp-alist
-  ;; FIXME: where should errors like "<repl>.ts:0:1" go?
-  `(("^\\s-*\\([^<\n:]+\\):\\([0-9]+\\):\\([0-9]+\\)" 1 2 3))
+  `(("^\\s-*\\([^)(<\n:]+\\):\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?" 1 2 3)
+    ;; FIXME: where should errors like "<repl>.ts:0:1" go?
+    ("^\\s-*at [^\n(]+(\\([^)(<\n:]+\\):\\([0-9]+\\):\\([0-9]+\\))" 1 2 3))
   "Regexp to match errors in Typescript repl.")
 
 

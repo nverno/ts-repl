@@ -103,7 +103,12 @@ Returns the name of the created comint buffer."
 
 (defun nodejs-common--preoutput-filter (string)
   ;; Ignore repeated prompts when switching windows
-  (if (and (not (bolp))
+  (if (and (not (if (comint-after-pmark-p)
+                    (bolp)
+                  (when-let ((proc (get-buffer-process (current-buffer))))
+                    (save-excursion
+                      (goto-char (process-mark proc))
+                      (bolp)))))
            (string-match-p
             (rx-to-string
              `(seq bos (+ (regexp ,nodejs-common--prompt-internal)) eos))
