@@ -87,7 +87,7 @@
   "Non-nil to set TS_NODE_DEBUG.")
 
 (defvar ts-repl-compilation-regexp-alist
-  `(("^\\s-*\\([^)(<\n:]+\\):\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?" 1 2 3)
+  `(("^\\s-*\\(?:at \\)?\\([^)(<\n:]+\\):\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?" 1 2 3)
     ;; FIXME: where should errors like "<repl>.ts:0:1" go?
     ("^\\s-*at [^\n(]+(\\([^)(<\n:]+\\):\\([0-9]+\\):\\([0-9]+\\))" 1 2 3))
   "Regexp to match errors in Typescript repl.")
@@ -116,15 +116,19 @@ When called interactively, or with SHOW, show the repl buffer after starting."
   (interactive (list current-prefix-arg nil nil t))
   (let* ((cmd (nodejs-common--calculate-command
                "Run typescript: " ts-repl-command ts-repl-arguments prompt cmd))
+         (startfile (or startfile ts-repl-startfile))
          (buffer (nodejs-common--make-comint
                   cmd
                   ts-repl-process-name
                   (and ts-repl-debug '("TS_NODE_DEBUG=1"))
                   ts-repl-history-filename
-                  (or startfile ts-repl-startfile))))
+                  ;; startfile
+                  )))
     (with-current-buffer buffer
       (unless (derived-mode-p 'ts-repl-mode)
         (ts-repl-mode)))
+    (when startfile
+      (ts-repl-send-silently (concat ".load " startfile "\n")))
     (when show
       (pop-to-buffer buffer))
     (get-buffer-process buffer)))
@@ -133,7 +137,7 @@ When called interactively, or with SHOW, show the repl buffer after starting."
 ;; -------------------------------------------------------------------
 ;;;  Completion
 
-(defun ts-repl--completion-filter (proc string)
+(defun ts-repl--redirect-filter (proc string)
   (setq string (replace-regexp-in-string
                 "\r+" "" (xterm-color-filter string)))
   (process-put proc 'done
@@ -152,9 +156,12 @@ When called interactively, or with SHOW, show the repl buffer after starting."
   (while (and (null (process-get proc 'done))
               (accept-process-output proc 0.1))))
 
-;; Same procedure as `nodejs-repl--send-string'
-(defun ts-repl--get-completions-from-process (input)
-  "Get completions for input from inferior process."
+;; Getting completions is the same overall procedure as `nodejs-repl--send-string'
+(defun ts-repl-send-silently (input &optional completions callback)
+  "Send INPUT to inferior process without echoing results in repl.
+If COMPLETIONS is non-nil, send \"\t\t\" after input to get readline completions
+and return them. If CALLBACK is non-nil, return result of calling CALLBACK in
+buffer with results."
   (with-temp-buffer
     (erase-buffer)
     (let* ((proc (ts-repl-process))
@@ -164,26 +171,31 @@ When called interactively, or with SHOW, show the repl buffer after starting."
       (unwind-protect
           (progn
             (set-process-buffer proc (current-buffer))
-            (set-process-filter proc #'ts-repl--completion-filter)
+            (set-process-filter proc #'ts-repl--redirect-filter)
             (set-marker (process-mark proc) (point-min))
-            ;; send two tabs: see `nodejs-repl--get-completions-from-process'
-            (ts-repl--send-redirected proc (concat input "\t"))
-            (ts-repl--send-redirected proc "\t"))
+            (if (not completions)
+                (ts-repl--send-redirected proc input)
+              ;; send two tabs: see `nodejs-repl--get-completions-from-process'
+              (ts-repl--send-redirected proc (concat input "\t"))
+              (ts-repl--send-redirected proc "\t")))
         (set-process-buffer proc orig-buf)
         (set-process-filter proc orig-filter)
         (set-marker (process-mark proc) orig-marker orig-buf))
-      (let ((beg (progn (goto-char (point-min))
-                        (forward-line 1)
-                        (point)))
-            (end (progn (goto-char (point-max))
-                        (forward-line -1)
-                        (point))))
-        (prog1 (when (> end beg)
-                 (split-string
-                  (buffer-substring-no-properties beg end)
-                  "[ \t\n]" t "[ \t\n]"))
-          ;; Clear repl line
-          (process-send-string proc "\x15"))))))
+      (if callback
+          (funcall callback)
+        (when completions
+          (let ((beg (progn (goto-char (point-min))
+                            (forward-line 1)
+                            (point)))
+                (end (progn (goto-char (point-max))
+                            (forward-line -1)
+                            (point))))
+            (prog1 (when (> end beg)
+                     (split-string
+                      (buffer-substring-no-properties beg end)
+                      "[ \t\n]" t "[ \t\n]"))
+              ;; Clear repl line
+              (process-send-string proc "\x15"))))))))
 
 (defvar ts-repl--completion-syntax
   (let ((tab (copy-syntax-table nodejs-common-syntax-table)))
@@ -205,13 +217,39 @@ When called interactively, or with SHOW, show the repl buffer after starting."
                  (point))))
       (when (and beg (>= beg (comint-line-beginning-position))
                  (< beg end))
-        (let ((completions (ts-repl--get-completions-from-process
-                            (buffer-substring-no-properties beg end))))
+        (let ((completions
+               (ts-repl-send-silently (buffer-substring-no-properties beg end) t)))
           (when completions
             (list beg end (completion-table-with-cache (lambda (_s) completions)))))))))
 
 
-;;; Sending Repl input
+;;; Send Input
+
+(defun ts-repl-eval-string (input &optional insert verbose)
+  "Evaluate INPUT in repl and return result.
+If INSERT is non-nil (prefix), insert result at point.
+If VERBOSE is non-nil (default when called interactively), echo result in
+minibuffer."
+  (interactive (list (read-string "Eval: ") current-prefix-arg t))
+  (unless (string-suffix-p "\n" input)
+    (setq input (concat input "\n")))
+  (let ((res (ts-repl-send-silently
+              input nil
+              (lambda ()
+                (goto-char (point-min))
+                (forward-line 1)
+                (let ((beg (point))
+                      (end (progn
+                             (goto-char (point-max))
+                             (beginning-of-line)
+                             (and (looking-at-p (concat "^" ts-repl-prompt))
+                                  (ignore-errors (forward-char -1)))
+                             (point))))
+                  (buffer-substring-no-properties beg end))))))
+    (and verbose (message res))
+    (and insert (insert res))
+    res))
+
 ;; XXX(5/31/24): coould share this with nodejs-repl
 (defun ts-repl-send-region (start end)
   "Send region from START to END to the `ts-repl-process'.
