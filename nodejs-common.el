@@ -105,7 +105,7 @@ Returns the name of the created comint buffer."
   ;; Ignore repeated prompts when switching windows
   (if (and (not (if (comint-after-pmark-p)
                     (bolp)
-                  (when-let ((proc (get-buffer-process (current-buffer))))
+                  (when-let* ((proc (get-buffer-process (current-buffer))))
                     (save-excursion
                       (goto-char (process-mark proc))
                       (bolp)))))
@@ -145,7 +145,7 @@ may want to re-add functions to it using `nodejs-common-mode-hook'."
               comint-highlight-input nil
               comint-prompt-read-only t
               comint-process-echoes t
-              
+
               comint-scroll-to-bottom-on-input 'this
               comint-scroll-to-bottom-on-output 'this
               scroll-conservatively 1
